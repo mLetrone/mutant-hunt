@@ -1,0 +1,230 @@
+name: quality
+
+# One quality stage, three jobs in parallel, one aggregating gate.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege by default. Only check-mutation widens this, and only to
+# pull-requests: write, so it can post the sticky score comment.
+permissions:
+  contents: read
+
+concurrency:
+  # One live run per ref. Pushing a fixup to a PR cancels the superseded run -
+  # mutation testing is the expensive job in this repo, don't pay for it twice.
+  # Never cancel on main: mutation-main.yml consumes what lands there.
+  group: quality-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Stryker and vitest are noisy in CI; this keeps the log readable.
+  FORCE_COLOR: "1"
+
+jobs:
+  # Format, lint and types share ONE job because they share one setup. Three
+  # separate jobs each paid their own checkout + pnpm install + toolchain
+  # bootstrap (~45 s) to run a check that takes ~8 s.
+  #
+  # But they are three STEPS, not one `vp check`, and that is deliberate:
+  # `vp check` stops at the first failing category. Measured - a file with both
+  # a formatting error and a type error reports only "Formatting issues found"
+  # and never type-checks. A formatter complaint that hides a type error costs
+  # a whole CI round trip per fix. `if: always()` on the later steps means one
+  # run reports all three.
+  check:
+    name: format + lint + types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup
+
+      # `pnpm run fmt` is `vp fmt --check`. Plain `vp fmt` REWRITES files
+      # (--write is its default), which in CI would turn the gate into a no-op
+      # that always passes on a dirty tree.
+      - name: Format
+        id: fmt
+        run: pnpm run fmt
+
+      # `vp lint --deny-warnings`. Without --deny-warnings oxlint reports
+      # warnings and still exits 0 - decoration, not a gate.
+      - name: Lint
+        id: lint
+        if: always()
+        run: pnpm run lint
+
+      # `vp check --no-fmt --no-lint`: the type half on its own, since the
+      # other two ran above.
+      - name: Types
+        id: types
+        if: always()
+        run: pnpm run typecheck
+
+  check-test:
+    name: test + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/setup
+      # Coverage thresholds are 100% on all four metrics (vite.config.ts), so
+      # vitest fails this job by itself - no extra threshold flag needed here.
+      # Act 1 of the demo: this job is green while the mutation job is not.
+      - run: pnpm run test:coverage
+
+  check-mutation:
+    name: mutation (incremental)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Needed only by the sticky-comment step below.
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          # Stryker's incremental cache matches mutants against the source it
+          # last saw; a shallow clone breaks that matching. Full history also
+          # lets the summary reference the base commit.
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup
+
+      # Restore only - the save happens in mutation-main.yml, on the default
+      # branch. WHY: a cache written by a PR run is scoped to that PR's ref and
+      # is invisible to every other PR, while a cache written on the default
+      # branch is readable from ALL of them. So main produces, PRs consume.
+      #
+      # Key scheme, agreed with mutation-main.yml, which saves under:
+      #   stryker-incremental-<os>-<hash of pnpm-lock.yaml>-<branch>-<sha>
+      # The primary key below can never hit (it ends in this run's own SHA;
+      # cache entries are immutable, so the SHA is what keeps saves from
+      # colliding). The restore-keys do the work, matching the newest cache by
+      # prefix - first one from the base branch, then any branch with the same
+      # dependencies.
+      # Invalidation: a dependency change alters the lockfile hash and drops the
+      # whole generation. That is deliberate - Stryker's incremental file tracks
+      # source and test files only, so a dependency bump, an env-var change or a
+      # snapshot update is INVISIBLE to it and would otherwise be replayed from
+      # stale Killed verdicts. There is deliberately NO fallback on the bare
+      # `stryker-incremental-<os>-` prefix: that would restore results computed
+      # against different dependencies. A full run is the correct answer there.
+      - name: Restore Stryker incremental cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: reports/stryker-incremental.json
+          key: stryker-incremental-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.head_ref }}-${{ github.sha }}
+          restore-keys: |
+            stryker-incremental-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.base_ref }}-
+            stryker-incremental-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+
+      # Fails the job below thresholds.break (80). The steps after it are
+      # `if: always()` so a red run still produces its report and its comment -
+      # a failing gate you cannot read is a gate people disable.
+      #
+      # Incremental, not diff-scoped. Diff-scoping was built and measured, and
+      # dropped: mutating only the changed lines ran 107 of 200 mutants but
+      # saved just 23% of the wall clock, because ~25 s of every run is fixed
+      # overhead no diff can shrink. See docs/ci-patterns.md.
+      - name: Run Stryker (incremental)
+        id: mutation
+        run: pnpm run test:mutation:incremental
+
+      # An explicit file check, deliberately NOT `if: hashFiles(...) != ''`.
+      # The `steps` context is documented as available in a step-level `if:`;
+      # whether hashFiles() is evaluated there is NOT documented either way, and
+      # an expression that silently evaluates to '' would skip the canary below
+      # without a word. A skipped canary is worse than no canary. `-s` also
+      # rejects a zero-byte report, which hashFiles would happily hash.
+      - name: Check the mutation report exists
+        id: report
+        if: always()
+        run: |
+          if [ -s reports/mutation/mutation.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No mutation report was produced - Stryker died before writing one."
+          fi
+
+      # THE CANARY. A failure mode measured during the spike: a version-
+      # mismatched runner (vitest@5 under the Stryker vitest-runner) reports 0%,
+      # every mutant survived, and still exits 0. Zero killed mutants with a
+      # passing test suite is not a score, it is a broken runner - and without
+      # this check it would paint the gate green.
+      - name: Sanity-check the mutation report
+        if: always() && steps.report.outputs.exists == 'true'
+        run: node scripts/mutation-summary.mjs reports/mutation/mutation.json --assert-sane
+
+      - name: Render the summary
+        if: always() && steps.report.outputs.exists == 'true'
+        run: node scripts/mutation-summary.mjs reports/mutation/mutation.json > "$RUNNER_TEMP/mutation-summary.md"
+
+      # Sticky comment: --edit-last rewrites this bot's previous comment instead
+      # of stacking a new one on every push, --create-if-none writes the first.
+      #
+      # WHY the fork guard: on a pull_request event from a fork, GITHUB_TOKEN is
+      # read-only no matter what `permissions:` says - the fork's contributor
+      # must not be able to borrow the base repo's write token. `gh pr comment`
+      # would 403. We SKIP rather than fail: a missing comment is cosmetic, the
+      # gate itself already lives in the job's exit code. The fix, if it is ever
+      # wanted, is a separate workflow_run workflow - NOT pull_request_target,
+      # which would run base-repo code with a write token against fork input.
+      - name: Post sticky mutation comment
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          steps.report.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body-file "$RUNNER_TEMP/mutation-summary.md" \
+            --edit-last --create-if-none
+
+      - name: Upload the HTML mutation report
+        if: always() && steps.report.outputs.exists == 'true'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mutation-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/mutation/
+          retention-days: 14
+          if-no-files-found: error
+
+  quality:
+    name: quality gate
+    runs-on: ubuntu-latest
+    permissions: {}
+    needs:
+      - check
+      - check-test
+      - check-mutation
+    # Without always() this job is SKIPPED when a dependency fails, and a
+    # skipped job on some branch-protection configurations reads as "not
+    # failing". With always() the job always runs and decides for itself, below.
+    if: always()
+    # THIS IS THE ONLY REQUIRED STATUS CHECK on the branch protection rule.
+    # Everything else is aggregated here, so adding a fourth check later is a
+    # one-line `needs:` edit in this file - no admin touching repo settings, no
+    # window where a new check is not yet required.
+    steps:
+      - name: Report dependency results
+        run: |
+          echo "check (fmt+lint+types): ${{ needs.check.result }}"
+          echo "test + coverage:        ${{ needs.check-test.result }}"
+          echo "mutation:               ${{ needs.check-mutation.result }}"
+
+      # needs.*.result is the list of the three results. Anything that is not
+      # "success" - failure, cancelled, or skipped - fails the gate.
+      # "skipped" counts as a failure deliberately: a job skipped by a bad `if:`
+      # or by a cancelled dependency chain is a check that did not run, and a
+      # check that did not run must never be reported as a pass.
+      - name: Fail unless every quality job succeeded
+        if: >-
+          contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled') ||
+          contains(needs.*.result, 'skipped')
+        run: |
+          echo "::error::At least one quality job did not succeed - see the results above."
+          exit 1

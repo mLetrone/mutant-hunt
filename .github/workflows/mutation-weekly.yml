@@ -1,0 +1,315 @@
+# ---------------------------------------------------------------------------------------
+# mutation-weekly.yml - the GROUND TRUTH mutation run, published to GitHub Pages.
+#
+# WHY THIS EXISTS, given quality.yml already runs mutation testing on every PR:
+# the PR job is incremental (`--incremental`, a result cache in reports/stryker-incremental.json).
+# Stryker's incremental mode diffs *source files and test files*. It does NOT see:
+#   - a changed dependency (a lockfile bump that alters library behaviour),
+#   - a changed environment variable or CI runner image,
+#   - a changed snapshot / fixture file that a test reads at runtime.
+# A cache that misses those reports a stale, flattering score forever. This workflow throws
+# the cache away: no incremental file is restored, no --mutate scoping, every mutant re-runs
+# from scratch. If the weekly score and the last PR score disagree, the cache had drifted and
+# the weekly number is the one to believe.
+#
+# It then publishes two things to GitHub Pages:
+#   1. the full HTML report at the site root (reports/mutation/index.html, pinned in
+#      stryker.config.json so the directory can be published as-is),
+#   2. badge.json, a shields.io *endpoint* file, at the site root.
+#
+# ---------------------------------------------------------------------------------------
+# FIRST-RUN BOOTSTRAP - read this before the demo, a badge that 404s is the worst failure
+# ---------------------------------------------------------------------------------------
+# 1. Settings -> Pages -> "Build and deployment" -> Source = **GitHub Actions**.
+#    A workflow CANNOT set this for you. With the default ("Deploy from a branch") the
+#    deploy-pages step fails with a "Pages site not configured" style error, or silently
+#    publishes nothing. This is a one-time manual click per repository.
+# 2. The badge URL 404s until the FIRST successful run of this workflow. Do not wait for the
+#    Monday cron: go to Actions -> "Mutation testing (weekly ground truth)" -> Run workflow.
+#    The badge in the README will render as a grey "invalid" pill until that run is green.
+# 3. shields.io caches endpoint responses for a few minutes (its own edge cache, which the
+#    endpoint schema's optional `cacheSeconds` can only *lengthen*, never shorten below the
+#    service minimum). After a fresh run, expect a short delay before the README badge
+#    changes. Do not "fix" a stale badge by re-running the workflow; wait, then hard-refresh.
+# 4. The final "Report" step of the deploy job prints the exact live badge URL and report URL
+#    for this repository. Copy them from there rather than hand-writing the owner.
+#
+# HUMAN ACTION STILL OUTSTANDING: the repository owner/name is not decided yet (the board
+# tracks it as the `OWNER/mutant-hunt` placeholder). Nothing is hardcoded here - the URLs are
+# derived at runtime from `github.repository` / the deploy-pages `page_url` output - but the
+# README badge markdown that T12 writes DOES need the real owner substituted by a human.
+#
+# ---------------------------------------------------------------------------------------
+# PAGES OWNERSHIP - read this before adding a Pages step to another workflow
+# ---------------------------------------------------------------------------------------
+# This workflow OWNS the Pages deployment. A repository has exactly one live Pages site, and
+# two workflows deploying to it concurrently is a lost-update race: whichever deploy finishes
+# last wins, silently. The deploy job therefore sits in the repo-wide concurrency group
+# **`github-pages`** with `cancel-in-progress: false`. Any other workflow that deploys Pages
+# (mutation-main.yml is the candidate) MUST use that exact same literal group name so GitHub
+# serialises them instead of racing. `cancel-in-progress: false` because a half-cancelled
+# Pages deployment can leave the site serving a partial artifact.
+# ---------------------------------------------------------------------------------------
+
+name: Mutation testing (weekly ground truth)
+
+on:
+  schedule:
+    # Mondays 03:17 UTC. Off the hour on purpose: GitHub queues scheduled workflows and the
+    # top of the hour is the most contended slot, so :00 crons are the ones that get delayed
+    # by tens of minutes. Weekly rather than nightly because a full run is expensive and the
+    # drift this catches accumulates over weeks, not hours.
+    - cron: "17 3 * * 1"
+  # Manual trigger: required for the first-run bootstrap above, and used to re-publish the
+  # report on demand (before a talk, after a dependency bump) without waiting for Monday.
+  workflow_dispatch:
+
+# Read-only at the top level; the deploy job widens this to exactly what Pages needs.
+# Least privilege: the build job only ever reads the repository.
+permissions:
+  contents: read
+
+# Workflow-level: stop two weekly runs (a cron firing while a manual dispatch is still going)
+# from burning two full mutation runs. Keyed on the workflow + ref, NOT on `github-pages` -
+# a full run can take tens of minutes and holding the shared Pages group for that whole time
+# would block any other workflow's deploy. The shared Pages lock lives on the deploy job only.
+# cancel-in-progress: false - never throw away a ground-truth run that is already paying for
+# itself; queue behind it instead.
+concurrency:
+  group: mutation-weekly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------------------------
+  # 1. Full mutation run + assemble the static site into public/
+  # -------------------------------------------------------------------------------------
+  mutation:
+    name: Full mutation run
+    runs-on: ubuntu-latest
+    # Budget, not a guess: the T00 spike measured ~12 s for 11 mutants (vitest runner, plus
+    # ~5 s for the TypeScript checker) on a 4-core i5-1145G7; a GitHub-hosted ubuntu-latest
+    # runner is also 4 vCPU, so ~1 s/mutant is the working rate. A domain of this size lands
+    # in the low hundreds of mutants -> ~5-10 min, plus ~2 min for checkout and install.
+    # 45 min is roughly 3x the expected worst case: generous enough that a slow runner or a
+    # grown test suite does not produce a spurious red weekly badge, tight enough that a hung
+    # Stryker process is killed in under an hour instead of running to the 6 h default.
+    timeout-minutes: 45
+    outputs:
+      # Consumed by the verdict job so a red score still publishes its badge before failing.
+      stryker-outcome: ${{ steps.stryker.outcome }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # Full mutation run, no git diff involved - a shallow clone is all we need.
+          fetch-depth: 1
+
+      # Shared composite action (owned by T06). Pins Node 24 and vp 0.3.3 and runs the
+      # install, so the toolchain version lock from T00 lives in exactly one place.
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+
+      # `pnpm run test:mutation` is the FULL run: stryker.config.json sets `incrementalFile` but
+      # never `incremental`, so without the --incremental flag Stryker writes that file and
+      # ignores any existing one. Deliberately NO actions/cache step anywhere in this
+      # workflow - restoring the incremental cache here would defeat the entire purpose.
+      #
+      # continue-on-error: the config sets `thresholds.break: 80`, so Stryker exits non-zero
+      # on a score below 80. That is a real failure and this workflow must report it - but it
+      # must report it AFTER publishing, because a red badge is the single most useful thing
+      # this workflow produces. The verdict job at the end converts this outcome into the
+      # workflow's overall result.
+      - name: Run Stryker (full, no incremental cache, no diff scoping)
+        id: stryker
+        continue-on-error: true
+        run: pnpm run test:mutation
+
+      # Guard against the failure mode where Stryker dies before writing a report: without
+      # this, the badge step would fall over with a confusing ENOENT, or worse, a stale file
+      # would get published. Missing report = hard failure, no publication.
+      - name: Assert the report exists
+        run: |
+          set -euo pipefail
+          for f in reports/mutation/mutation.json reports/mutation/index.html; do
+            if [ ! -s "$f" ]; then
+              echo "::error::$f is missing or empty - Stryker did not finish. Nothing will be published."
+              exit 1
+            fi
+          done
+
+      # Contract verified by running the script locally (node scripts/mutation-badge.mjs
+      # --help, plus a real run against test/fixtures/mutation.json):
+      #   positional arg = the Stryker JSON report, --out = the endpoint file to write.
+      # Both are passed explicitly rather than relying on the script's defaults, so this line
+      # keeps working if the defaults ever change. The script creates the output directory.
+      - name: Generate the shields.io endpoint badge
+        run: node scripts/mutation-badge.mjs reports/mutation/mutation.json --out public/badge.json
+
+      # Site layout, chosen so the published directory needs no rewriting:
+      #   /            -> the Stryker HTML report (index.html is already the pinned filename)
+      #   /badge.json  -> the shields endpoint the README points at
+      # No .nojekyll file: the upload-pages-artifact + deploy-pages path serves the artifact
+      # as-is and never runs Jekyll, so there is nothing to opt out of. (It would also need
+      # include-hidden-files: true to survive the upload, which is a needless extra surface.)
+      - name: Assemble the Pages site
+        run: |
+          set -euo pipefail
+          # public/ already exists (the badge script created it) - mkdir -p anyway so this
+          # step does not depend on the previous one's side effects.
+          mkdir -p public
+          # cp -R the whole directory: the HTML reporter emits supporting assets next to
+          # index.html, and copying index.html alone yields an unstyled, broken report.
+          cp -R reports/mutation/. public/
+          echo "--- public/ ---"
+          ls -la public/
+          echo "--- badge.json ---"
+          cat public/badge.json
+
+      # Surface the numbers on the run page itself, so a red weekly run is diagnosable from
+      # the Actions tab without downloading anything.
+      - name: Job summary
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## Weekly ground-truth mutation run"
+            echo
+            echo "Stryker step outcome: \`${{ steps.stryker.outcome }}\`"
+            echo
+            if [ -s public/badge.json ]; then
+              echo '```json'
+              cat public/badge.json
+              echo
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Inputs verified against actions/upload-pages-artifact v5.0.0 action.yml:
+      #   name (default "github-pages"), path (required, default "_site/"),
+      #   retention-days, include-hidden-files. `path` is the only one we need.
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: public
+
+  # -------------------------------------------------------------------------------------
+  # 2. Deploy to GitHub Pages
+  # -------------------------------------------------------------------------------------
+  deploy:
+    name: Publish to GitHub Pages
+    needs: mutation
+    runs-on: ubuntu-latest
+    # deploy-pages polls the Pages API with its own default timeout of 600000 ms (10 min).
+    # 15 min leaves room for that full internal timeout plus job startup, and still kills a
+    # wedged deployment quickly - this job does no real work of its own.
+    timeout-minutes: 15
+
+    # THE shared Pages lock. Any other workflow that deploys Pages must copy this literal
+    # group name verbatim. Repo-wide groups are matched by string, so a different name is a
+    # different lock and the two deploys would race.
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+
+    permissions:
+      # Write the Pages deployment.
+      pages: write
+      # Mint the OIDC token deploy-pages exchanges for its deployment credentials.
+      id-token: write
+      # Required by the Actions runtime to resolve the workflow itself; nothing here reads
+      # repository content.
+      contents: read
+
+    environment:
+      # Binds the run to the built-in github-pages environment, which is what makes the
+      # deployment URL show up on the repo home page and in the Environments tab.
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      # Inputs verified against actions/deploy-pages v5.0.1 action.yml:
+      #   token (default github.token), timeout, error_count, reporting_interval,
+      #   artifact_name (default "github-pages"), preview. Output: page_url.
+      # Every default is correct for us, so no `with:` block - the artifact name matches the
+      # upload step's default.
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5.0.1
+
+      # The repo owner is an open question (placeholder OWNER/mutant-hunt), so nothing above
+      # hardcodes a URL. This step prints the real ones for whoever writes the README.
+      # page_url is authoritative and always ends in a slash; the github.repository fallback
+      # is only there in case a future deploy-pages drops the output.
+      - name: Report the live URLs
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          REPOSITORY: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          site="${PAGE_URL:-}"
+          if [ -z "$site" ]; then
+            # Fallback shape for a project site: https://<owner-lowercased>.github.io/<repo>/
+            owner_lc="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+            repo_name="${REPOSITORY#*/}"
+            site="https://${owner_lc}.github.io/${repo_name}/"
+          fi
+          badge_json="${site}badge.json"
+          badge_img="https://img.shields.io/endpoint?style=flat&url=${badge_json}"
+          {
+            echo "## Published"
+            echo
+            echo "| what | url |"
+            echo "| --- | --- |"
+            echo "| HTML mutation report | ${site} |"
+            echo "| shields endpoint | ${badge_json} |"
+            echo "| badge image | ${badge_img} |"
+            echo
+            echo "README markdown:"
+            echo
+            echo '```markdown'
+            echo "[![mutants slain](${badge_img})](${site})"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------------------
+  # 3. Verdict - fail the workflow AFTER publishing if the score broke the threshold
+  # -------------------------------------------------------------------------------------
+  # The mutation job swallows Stryker's exit code on purpose (see the continue-on-error
+  # comment) so that a below-threshold score still gets its red badge published. This job
+  # puts the failure back, so a broken weekly run is red in the Actions tab and in any
+  # notification, rather than quietly green.
+  verdict:
+    name: Threshold verdict
+    needs: [mutation, deploy]
+    # always(): run even when an upstream job failed, otherwise a failed deploy would skip
+    # this job and the summary below would never be written.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Evaluate
+        env:
+          STRYKER_OUTCOME: ${{ needs.mutation.outputs.stryker-outcome }}
+          MUTATION_RESULT: ${{ needs.mutation.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+        run: |
+          set -uo pipefail
+          echo "stryker step: ${STRYKER_OUTCOME:-<none>} | mutation job: ${MUTATION_RESULT} | deploy job: ${DEPLOY_RESULT}"
+          failed=0
+          if [ "${MUTATION_RESULT}" != "success" ]; then
+            echo "::error::the mutation job did not succeed (${MUTATION_RESULT})"
+            failed=1
+          fi
+          if [ "${DEPLOY_RESULT}" != "success" ]; then
+            echo "::error::the Pages deployment did not succeed (${DEPLOY_RESULT})"
+            failed=1
+          fi
+          if [ "${STRYKER_OUTCOME:-}" = "failure" ]; then
+            echo "::error::Stryker exited non-zero - the mutation score is below thresholds.break (80). The badge and report were published anyway; open the Pages report to see which mutants escaped."
+            failed=1
+          fi
+          exit "$failed"

@@ -1,0 +1,37 @@
+name: "Setup Vite+ toolchain"
+description: >-
+  Installs the pinned Vite+ (vp) toolchain and the project dependencies.
+  The caller does its own actions/checkout first, because the checkout options
+  differ per job (the mutation jobs need fetch-depth: 0, the lint jobs do not).
+
+# WHY a composite action rather than a YAML anchor: GitHub Actions does not
+# support YAML anchors or `extends` in workflow files. A composite action is the
+# only way to write the setup once and have six jobs reuse it. Bumping vp is
+# then a one-line change here instead of six.
+
+runs:
+  using: composite
+  steps:
+    # voidzero-dev/setup-vp@v1.21.0 - released 2026-09-18, verified via the
+    # GitHub releases API. Pinned to the release tag (not a moving `v1`) so a
+    # broken upstream release cannot silently change what CI runs.
+    # Every input below exists in that tag's action.yml (verified against
+    # https://raw.githubusercontent.com/voidzero-dev/setup-vp/v1.21.0/action.yml):
+    #   version, node-version, cache, run-install.
+    - name: Install Vite+ and project dependencies
+      uses: voidzero-dev/setup-vp@v1.21.0
+      with:
+        # vp 0.3.3 is a hard version lock, not a preference: it ships
+        # vitest@4.1.11, and the Stryker vitest-runner reports 0% with every
+        # mutant survived (exit code 0, no error) against vitest@5.
+        # See docs/decisions/0001-test-runner.md.
+        version: "0.3.3"
+        # Node 24 matches .node-version and the `engines` range in package.json.
+        node-version: "24"
+        # Caches the pnpm store. The action derives the key from the lockfile it
+        # auto-detects (pnpm-lock.yaml), so the cache is invalidated by any
+        # dependency change and by nothing else.
+        cache: "true"
+        # Runs `vp install` (which wraps pnpm) right after the toolchain is set
+        # up, so every job can call `pnpm run <script>` directly.
+        run-install: "true"
