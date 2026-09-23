@@ -101,4 +101,78 @@ describe("Order.create", () => {
     }
     expect(result.problems.map((problem) => problem.code)).toEqual(["quantity-too-high"]);
   });
+
+  it("accepts a line quantity at exactly the minimum and the maximum", () => {
+    const result = Order.create(
+      [
+        { sku: "wolfsbane-oil", quantity: 1 },
+        { sku: "hunter-cloak", quantity: 99 },
+      ],
+      "novice",
+      "new-moon",
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("reports the exact message for an empty order", () => {
+    const result = Order.create([], "novice", "new-moon");
+
+    if (result.ok) {
+      throw new Error("expected a rejected order");
+    }
+    expect(result.problems).toEqual([
+      { code: "empty-order", message: "An order must contain at least one line" },
+    ]);
+  });
+
+  it("reports the exact message for a duplicated sku", () => {
+    const result = Order.create(
+      [
+        { sku: "blessed-bullets", quantity: 4 },
+        { sku: "blessed-bullets", quantity: 6 },
+      ],
+      "novice",
+      "new-moon",
+    );
+
+    if (result.ok) {
+      throw new Error("expected a rejected order");
+    }
+    expect(result.problems).toEqual([
+      { code: "duplicate-sku", message: 'Sku "blessed-bullets" appears on more than one line' },
+    ]);
+  });
+
+  it("reports the exact message for a quantity below the minimum", () => {
+    const result = Order.create([{ sku: "silver-shot-shell", quantity: 0 }], "novice", "new-moon");
+
+    if (result.ok) {
+      throw new Error("expected a rejected order");
+    }
+    expect(result.problems).toEqual([
+      {
+        code: "quantity-too-low",
+        message: 'Quantity for "silver-shot-shell" must be at least 1, got 0',
+      },
+    ]);
+  });
+
+  it("reports the exact message for a quantity above the maximum", () => {
+    const result = Order.create(
+      [{ sku: "silvered-arrowhead", quantity: 100 }],
+      "novice",
+      "new-moon",
+    );
+
+    if (result.ok) {
+      throw new Error("expected a rejected order");
+    }
+    expect(result.problems).toEqual([
+      {
+        code: "quantity-too-high",
+        message: 'Quantity for "silvered-arrowhead" must be at most 99, got 100',
+      },
+    ]);
+  });
 });

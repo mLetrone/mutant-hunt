@@ -137,4 +137,30 @@ describe("Bill.from", () => {
     expect(bill.discountRate).toBe(25);
     expect(bill.total).toBe(199_777);
   });
+
+  it("unlocks the rank discount at exactly three distinct lines", () => {
+    const bill = billFor(
+      [
+        { sku: "blessed-bullets", quantity: 1 },
+        { sku: "wolfsbane-oil", quantity: 1 },
+        { sku: "hunter-cloak", quantity: 1 },
+      ],
+      "grandmaster",
+      "new-moon",
+    );
+
+    expect(bill.rankRate).toBe(15);
+  });
+
+  it("applies the low volume discount at exactly ten total units", () => {
+    const bill = billFor([{ sku: "wolfsbane-oil", quantity: 10 }], "novice", "new-moon");
+
+    expect(bill.volumeRate).toBe(5);
+  });
+
+  it("applies the high volume discount at exactly fifty total units", () => {
+    const bill = billFor([{ sku: "wolfsbane-oil", quantity: 50 }], "novice", "new-moon");
+
+    expect(bill.volumeRate).toBe(12);
+  });
 });
