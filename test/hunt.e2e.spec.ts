@@ -64,4 +64,52 @@ describe("hunting gear checkout", () => {
     }
     expect(result.problems.some((problem) => problem.code === "duplicate-sku")).toBe(true);
   });
+
+  it("prints each line's own total, a lunar premium only for the silver-plated line, and no guild discount line when none applies", () => {
+    const order = orderFrom(
+      [
+        { sku: "wolfsbane-oil", quantity: 2 },
+        { sku: "silvered-arrowhead", quantity: 2 },
+      ],
+      "novice",
+      "full-moon",
+    );
+    const bill = Bill.from(order);
+    expect(bill.discountAmount).toBe(0);
+
+    const receipt = Receipt.for(bill);
+
+    expect(receipt.lines()).toEqual([
+      "2 x Wolfsbane oil @ 12.75 = 25.50",
+      "2 x Silvered arrowhead @ 11.33 = 22.66",
+      "    lunar premium 20% + 4.53",
+      "Subtotal 52.69",
+      "TOTAL 52.69",
+    ]);
+  });
+
+  it("prints the guild discount as a negative credit line, never as a surcharge, when a discount applies", () => {
+    const order = orderFrom(
+      [
+        { sku: "blessed-bullets", quantity: 1 },
+        { sku: "wolfsbane-oil", quantity: 1 },
+        { sku: "hunter-cloak", quantity: 1 },
+      ],
+      "grandmaster",
+      "new-moon",
+    );
+    const bill = Bill.from(order);
+    expect(bill.discountAmount).toBe(2_494);
+
+    const receipt = Receipt.for(bill);
+
+    expect(receipt.lines()).toEqual([
+      "1 x Blessed bullets (box of 12) @ 33.50 = 33.50",
+      "1 x Wolfsbane oil @ 12.75 = 12.75",
+      "1 x Hunter's cloak @ 120.00 = 120.00",
+      "Subtotal 166.25",
+      "Guild discount 15% -24.94",
+      "TOTAL 141.31",
+    ]);
+  });
 });
