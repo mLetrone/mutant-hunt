@@ -1,8 +1,10 @@
 # mutant-hunt
 
+[![mutants slain](https://img.shields.io/endpoint?style=flat&url=https%3A%2F%2FmLetrone.github.io%2Fmutant-hunt%2Fbadge.json)](https://mLetrone.github.io/mutant-hunt/)
+
 A pricing engine for monster-hunting gear — silvered blades, blessed ammunition, guild ranks,
 moon-phase surcharges — with a test suite at 100% line, branch, function and statement coverage,
-green CI, and a mutation score of **57.60%**. 53 of 125 valid mutants walk straight through that
+green CI, and a mutation score of **59.63%**. 44 of 109 valid mutants walk straight through that
 suite without a single test noticing. Coverage tells you every line ran. It does not tell you
 whether anything checked what that line produced.
 
@@ -115,11 +117,11 @@ measured on the spike — a version-mismatched test runner (vitest 5 under a Str
 built for vitest 4) reports **0% mutation score, every mutant survived, and still exits 0**. Without
 a canary, that is a green gate. With one, it's a hard failure before anyone trusts the badge.
 
-Badge markdown (owner not decided yet — `OWNER/mutant-hunt` is a placeholder, substitute the real
-one):
+Badge markdown (the badge at the top of this file points at
+it):
 
 ```markdown
-[![mutants slain](https://img.shields.io/endpoint?style=flat&url=https://OWNER.github.io/mutant-hunt/badge.json)](https://OWNER.github.io/mutant-hunt/)
+[![mutants slain](https://img.shields.io/endpoint?style=flat&url=https://mLetrone.github.io/mutant-hunt/badge.json)](https://mLetrone.github.io/mutant-hunt/)
 ```
 
 Two things a workflow file cannot do for you: GitHub Pages must be switched to source
