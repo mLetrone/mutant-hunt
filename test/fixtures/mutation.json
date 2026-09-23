@@ -1,0 +1,419 @@
+{
+  "schemaVersion": "2.0",
+  "thresholds": {
+    "high": 90,
+    "low": 70
+  },
+  "projectRoot": "/home/runner/work/mutant-hunt/mutant-hunt",
+  "config": {
+    "testRunner": "vitest",
+    "coverageAnalysis": "perTest",
+    "ignoreStatic": true,
+    "mutate": [
+      "src/**/*.ts",
+      "!src/**/*.spec.ts"
+    ],
+    "thresholds": {
+      "high": 90,
+      "low": 70,
+      "break": 80
+    }
+  },
+  "files": {
+    "src/domain/discounts.ts": {
+      "language": "typescript",
+      "source": "export type Rank = \"Novice\" | \"Journeyman\" | \"Master\" | \"Grandmaster\";\n\nconst RANK_RATE: Record<Rank, number> = {\n  Novice: 0,\n  Journeyman: 5,\n  Master: 10,\n  Grandmaster: 15,\n};\n\nexport function rankDiscount(rank: Rank, itemCount: number): number {\n  if (itemCount >= 3) {\n    return RANK_RATE[rank];\n  }\n  return 0;\n}\n\nexport function bulkDiscount(quantity: number): number {\n  if (quantity >= 50) {\n    return 12;\n  }\n  if (quantity >= 10) {\n    return 5;\n  }\n  return 0;\n}\n\nexport function capDiscount(totalPercent: number): number {\n  return Math.min(totalPercent, 25);\n}\n",
+      "mutants": [
+        {
+          "id": "1",
+          "mutatorName": "EqualityOperator",
+          "replacement": "itemCount > 3",
+          "location": {
+            "start": {
+              "line": 11,
+              "column": 7
+            },
+            "end": {
+              "line": 11,
+              "column": 21
+            }
+          },
+          "status": "Killed",
+          "static": false,
+          "coveredBy": [
+            "0",
+            "1"
+          ],
+          "killedBy": [
+            "1"
+          ],
+          "testsCompleted": 2,
+          "statusReason": "expected 900 to be 1000 // Object.is equality",
+          "duration": 14
+        },
+        {
+          "id": "2",
+          "mutatorName": "ConditionalExpression",
+          "replacement": "true",
+          "location": {
+            "start": {
+              "line": 11,
+              "column": 7
+            },
+            "end": {
+              "line": 11,
+              "column": 21
+            }
+          },
+          "status": "Killed",
+          "static": false,
+          "coveredBy": [
+            "0",
+            "1"
+          ],
+          "killedBy": [
+            "0"
+          ],
+          "testsCompleted": 1,
+          "statusReason": "expected 1000 to be 950 // Object.is equality",
+          "duration": 11
+        },
+        {
+          "id": "3",
+          "mutatorName": "EqualityOperator",
+          "replacement": "quantity > 50",
+          "location": {
+            "start": {
+              "line": 18,
+              "column": 7
+            },
+            "end": {
+              "line": 18,
+              "column": 21
+            }
+          },
+          "status": "Survived",
+          "static": false,
+          "coveredBy": [
+            "2"
+          ],
+          "testsCompleted": 1,
+          "duration": 12
+        },
+        {
+          "id": "4",
+          "mutatorName": "EqualityOperator",
+          "replacement": "quantity > 10",
+          "location": {
+            "start": {
+              "line": 21,
+              "column": 7
+            },
+            "end": {
+              "line": 21,
+              "column": 21
+            }
+          },
+          "status": "Survived",
+          "static": false,
+          "coveredBy": [
+            "2"
+          ],
+          "testsCompleted": 1,
+          "duration": 9
+        },
+        {
+          "id": "5",
+          "mutatorName": "MethodExpression",
+          "replacement": "Math.max(totalPercent, 25)",
+          "location": {
+            "start": {
+              "line": 28,
+              "column": 10
+            },
+            "end": {
+              "line": 28,
+              "column": 36
+            }
+          },
+          "status": "Survived",
+          "static": false,
+          "coveredBy": [
+            "3"
+          ],
+          "testsCompleted": 1,
+          "duration": 8
+        },
+        {
+          "id": "6",
+          "mutatorName": "BlockStatement",
+          "replacement": "{}",
+          "location": {
+            "start": {
+              "line": 17,
+              "column": 56
+            },
+            "end": {
+              "line": 25,
+              "column": 2
+            }
+          },
+          "status": "Timeout",
+          "static": false,
+          "coveredBy": [
+            "2"
+          ],
+          "statusReason": "Hit limit reached (1001/1000)",
+          "duration": 5000
+        }
+      ]
+    },
+    "src/domain/surcharges.ts": {
+      "language": "typescript",
+      "source": "export type MoonPhase = \"None\" | \"FullMoon\" | \"LunarEclipse\";\n\nexport function moonSurcharge(phase: MoonPhase, silverPlated: boolean): number {\n  if (!silverPlated) {\n    return 0;\n  }\n  if (phase === \"FullMoon\") {\n    return 20;\n  }\n  if (phase === \"LunarEclipse\") {\n    return 50;\n  }\n  return 0;\n}\n\nexport function blessingFee(blessedItems: number, subtotalCents: number): number {\n  if (subtotalCents > 100_000) {\n    return 0;\n  }\n  return blessedItems * 250;\n}\n",
+      "mutants": [
+        {
+          "id": "7",
+          "mutatorName": "BooleanLiteral",
+          "replacement": "silverPlated",
+          "location": {
+            "start": {
+              "line": 4,
+              "column": 7
+            },
+            "end": {
+              "line": 4,
+              "column": 20
+            }
+          },
+          "status": "Killed",
+          "static": false,
+          "coveredBy": [
+            "4",
+            "5"
+          ],
+          "killedBy": [
+            "4"
+          ],
+          "testsCompleted": 1,
+          "statusReason": "expected 0 to be 20 // Object.is equality",
+          "duration": 10
+        },
+        {
+          "id": "8",
+          "mutatorName": "EqualityOperator",
+          "replacement": "phase !== \"FullMoon\"",
+          "location": {
+            "start": {
+              "line": 7,
+              "column": 7
+            },
+            "end": {
+              "line": 7,
+              "column": 27
+            }
+          },
+          "status": "Killed",
+          "static": false,
+          "coveredBy": [
+            "4",
+            "5"
+          ],
+          "killedBy": [
+            "5"
+          ],
+          "testsCompleted": 2,
+          "statusReason": "expected 20 to be 0 // Object.is equality",
+          "duration": 13
+        },
+        {
+          "id": "9",
+          "mutatorName": "StringLiteral",
+          "replacement": "\"\"",
+          "location": {
+            "start": {
+              "line": 7,
+              "column": 17
+            },
+            "end": {
+              "line": 7,
+              "column": 27
+            }
+          },
+          "status": "Killed",
+          "static": false,
+          "coveredBy": [
+            "5"
+          ],
+          "killedBy": [
+            "5"
+          ],
+          "testsCompleted": 1,
+          "statusReason": "expected 0 to be 20 // Object.is equality",
+          "duration": 10
+        },
+        {
+          "id": "10",
+          "mutatorName": "EqualityOperator",
+          "replacement": "phase !== \"LunarEclipse\"",
+          "location": {
+            "start": {
+              "line": 10,
+              "column": 7
+            },
+            "end": {
+              "line": 10,
+              "column": 31
+            }
+          },
+          "status": "NoCoverage",
+          "static": false,
+          "coveredBy": []
+        },
+        {
+          "id": "11",
+          "mutatorName": "EqualityOperator",
+          "replacement": "subtotalCents >= 100_000",
+          "location": {
+            "start": {
+              "line": 17,
+              "column": 7
+            },
+            "end": {
+              "line": 17,
+              "column": 30
+            }
+          },
+          "status": "Survived",
+          "static": false,
+          "coveredBy": [
+            "6"
+          ],
+          "testsCompleted": 1,
+          "duration": 7
+        },
+        {
+          "id": "12",
+          "mutatorName": "ArithmeticOperator",
+          "replacement": "blessedItems / 250",
+          "location": {
+            "start": {
+              "line": 20,
+              "column": 10
+            },
+            "end": {
+              "line": 20,
+              "column": 28
+            }
+          },
+          "status": "NoCoverage",
+          "static": false,
+          "coveredBy": []
+        }
+      ]
+    }
+  },
+  "testFiles": {
+    "test/quote.spec.ts": {
+      "tests": [
+        {
+          "id": "0",
+          "name": "quoteHunt > gives no rank discount to a Novice",
+          "location": {
+            "start": {
+              "line": 8,
+              "column": 3
+            }
+          }
+        },
+        {
+          "id": "1",
+          "name": "quoteHunt > gives a Master the guild rate",
+          "location": {
+            "start": {
+              "line": 14,
+              "column": 3
+            }
+          }
+        },
+        {
+          "id": "2",
+          "name": "quoteHunt > applies a bulk break on a large order",
+          "location": {
+            "start": {
+              "line": 21,
+              "column": 3
+            }
+          }
+        },
+        {
+          "id": "3",
+          "name": "quoteHunt > caps the total discount",
+          "location": {
+            "start": {
+              "line": 28,
+              "column": 3
+            }
+          }
+        },
+        {
+          "id": "4",
+          "name": "quoteHunt > leaves plain steel alone under a full moon",
+          "location": {
+            "start": {
+              "line": 35,
+              "column": 3
+            }
+          }
+        },
+        {
+          "id": "5",
+          "name": "quoteHunt > surcharges silver-plated gear under a full moon",
+          "location": {
+            "start": {
+              "line": 41,
+              "column": 3
+            }
+          }
+        },
+        {
+          "id": "6",
+          "name": "quoteHunt > charges the blessing fee",
+          "location": {
+            "start": {
+              "line": 48,
+              "column": 3
+            }
+          }
+        }
+      ]
+    }
+  },
+  "performance": {
+    "setup": 4210,
+    "initialRun": 1870,
+    "mutation": 26540
+  },
+  "framework": {
+    "name": "StrykerJS",
+    "version": "10.0.0",
+    "branding": {
+      "homepageUrl": "https://stryker-mutator.io",
+      "imageUrl": "https://raw.githubusercontent.com/stryker-mutator/stryker-net/master/design/stryker_180x180.png"
+    }
+  },
+  "system": {
+    "ci": true,
+    "os": {
+      "platform": "linux",
+      "version": "6.11.0-1018-azure"
+    },
+    "cpu": {
+      "logicalCores": 4,
+      "model": "AMD EPYC 7763 64-Core Processor"
+    },
+    "ram": {
+      "total": 16766
+    }
+  }
+}

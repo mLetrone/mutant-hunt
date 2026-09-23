@@ -1,0 +1,173 @@
+# Mutation testing on the default branch — the CACHE PRODUCER.
+#
+# WHY this workflow exists at all:
+#   StrykerJS has no `--since`. Its `--incremental` mode keeps a result cache
+#   (`reports/stryker-incremental.json`) and re-runs only the mutants whose code or
+#   covering tests changed, while still reporting the FULL project score.
+#   That file is what makes the PR gate (`quality.yml`, job `check-mutation`) fast.
+#
+#   GitHub Actions cache scoping is the whole mechanism: a cache written from a run on the
+#   DEFAULT BRANCH is readable by every PR branch in the repo, while a cache written from a
+#   PR branch is visible only to that PR. So the PR job can only ever *restore*; something
+#   has to *produce*. That producer is this workflow, on every push to main.
+#
+# It deliberately does NOT publish to GitHub Pages — see the Pages note below.
+
+name: mutation-main
+
+on:
+  push:
+    branches: [main]
+
+# Least privilege: this workflow reads the repo and writes a cache entry. Cache access needs
+# no extra scope beyond `contents: read`, and nothing here comments, deploys or tags.
+permissions:
+  contents: read
+
+# Mandatory: a fast pusher lands three commits on main in a minute and we would run three
+# mutation suites that all race to write the same cache key prefix. Keep only the newest —
+# the incremental file from an older commit is strictly less useful than the newest one.
+# `cancel-in-progress: true` is safe here because nothing is published; the worst case is
+# that one commit never produces a cache and the next full/incremental run absorbs the work.
+concurrency:
+  group: mutation-main-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  INCREMENTAL_FILE: reports/stryker-incremental.json
+
+jobs:
+  mutation:
+    name: Mutation run (incremental) + cache save
+    runs-on: ubuntu-latest
+    # Mutation testing is slow by nature; the default 360 min is far too generous to be a
+    # useful signal that something hung (e.g. a runner deadlock in the Stryker sandbox).
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        # No `fetch-depth: 0`: this workflow does no diff-scoping (that is the PR job's
+        # `--mutate` ranges). A shallow clone is enough and faster.
+
+      # Node 24 + pnpm + `vp` 0.3.3 + `pnpm install`, all pinned inside the composite action.
+      # Owned by T06 — do not inline the setup steps here, or the two workflows drift.
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+
+      # ------------------------------------------------------------------------------
+      # CACHE KEY SCHEME (contract with quality.yml / check-mutation)
+      #
+      #   stryker-incremental-<os>-<lockfile hash>-<branch>-<commit sha>
+      #
+      # Read left to right, every segment earns its place:
+      #   `stryker-incremental-`  the prefix a PR restores on. Fixed. Never change it without
+      #                           changing quality.yml in the same commit.
+      #   <os>                    the incremental file records test ids and timings produced on
+      #                           this runner image; do not feed a Linux cache to a macOS run.
+      #   <lockfile hash>         CAVEAT, upstream and load-bearing: Stryker's incremental diff
+      #                           compares SOURCE and TEST files only. A dependency bump changes
+      #                           behaviour without changing a single tracked file, so Stryker
+      #                           would happily reuse stale "Killed" verdicts. Putting
+      #                           hashFiles('pnpm-lock.yaml') in the key makes a dependency
+      #                           change a cache MISS, i.e. one honest full run. Same reasoning
+      #                           applies to env vars and snapshots — those we cannot key on;
+      #                           they are documented in docs/ci-patterns.md instead.
+      #   <branch>                lets a PR prefer the base branch's cache over any other branch.
+      #   <commit sha>            makes the key unique per run. `actions/cache/save` FAILS (or
+      #                           warns and skips) when the exact key already exists, and a
+      #                           cache entry is immutable — so a rerun of the same commit, or a
+      #                           second push, must not collide.
+      #
+      # How the PR side hits it (quality.yml uses actions/cache/restore):
+      #   key:          stryker-incremental-<os>-<hash of the PR's lockfile>-<head ref>-<head sha>
+      #                 -> essentially never an exact hit, and that is fine.
+      #   restore-keys: stryker-incremental-<os>-<hash>-${{ github.base_ref }}-   <- normal path,
+      #                     matches the newest cache this workflow saved on main with the SAME
+      #                     lockfile. Prefix matching is literal and picks the most recent entry.
+      #                 stryker-incremental-<os>-<hash>-                          <- any branch,
+      #                     same deps.
+      #                 stryker-incremental-<os>-                                 <- last resort;
+      #                     only sound if the PR job tolerates a stale-deps file. Preferably the
+      #                     PR job stops at the second fallback and takes the full run.
+      # ------------------------------------------------------------------------------
+      - name: Compute cache keys
+        id: keys
+        run: |
+          prefix="stryker-incremental-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}"
+          {
+            echo "prefix=$prefix"
+            echo "branch_prefix=$prefix-${{ github.ref_name }}-"
+            echo "key=$prefix-${{ github.ref_name }}-${{ github.sha }}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Restore the previous main cache so this run is itself incremental. Without it every
+      # push to main is a cold full run and the producer costs far more than it saves.
+      # An exact hit is impossible (the sha is in the key), so this always lands on a
+      # restore-key — the branch prefix first, then any branch with the same lockfile.
+      - name: Restore previous incremental results
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ env.INCREMENTAL_FILE }}
+          key: ${{ steps.keys.outputs.key }}
+          restore-keys: |
+            ${{ steps.keys.outputs.branch_prefix }}
+            ${{ steps.keys.outputs.prefix }}-
+
+      # `test:mutation:incremental` = `stryker run --incremental`
+      #                          --incremental
+      # (invoked through the bin script, never `pnpm exec stryker` — ERR_PNPM_IGNORED_BUILDS.)
+      # thresholds.break = 80 in stryker.config.json, so a regression below 80 fails this job.
+      # It still produces a usable incremental file first — hence the `!cancelled()` on the save.
+      - name: Run mutation testing (incremental)
+        run: pnpm run test:mutation:incremental
+
+      # Runs even when the mutation step failed the break threshold (see the save step below),
+      # but not after a cancellation, where the file may be half-written.
+      - name: Check the incremental file was produced
+        id: incremental
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -s "$INCREMENTAL_FILE" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::$INCREMENTAL_FILE missing or empty - nothing to cache for the PR gate."
+          fi
+
+      # `!cancelled()`: the incremental file is written before Stryker evaluates thresholds, so
+      # a run that fails the break threshold still produced results worth caching. Throwing them
+      # away would make the next main push, and every PR until then, pay for a full run.
+      - name: Save incremental results to the Actions cache
+        if: ${{ !cancelled() && steps.incremental.outputs.exists == 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.INCREMENTAL_FILE }}
+          key: ${{ steps.keys.outputs.key }}
+
+      # ------------------------------------------------------------------------------
+      # PAGES DECISION: this workflow does NOT deploy to GitHub Pages.
+      #
+      # `actions/deploy-pages` deploys through the single `github-pages` environment, which
+      # holds one live deployment per repository. Adding a second producer here would mean two
+      # workflows (this one, on every push to main, and mutation-weekly.yml) contending for it:
+      # concurrent deployments get cancelled or queued behind each other, and because this run
+      # is INCREMENTAL while the weekly run is a full cold run, whichever finishes last wins —
+      # the published report could silently go backwards to an older or partial view.
+      # One owner for Pages is worth more than a fresher report. mutation-weekly.yml owns it.
+      #
+      # What we do instead: publish the same HTML report as a workflow artifact. It gives
+      # per-commit access to the report with zero coupling to the Pages deployment, and needs
+      # no extra permission. `reports/` is gitignored, so the artifact is the only way to get
+      # at a main-branch report between weekly runs.
+      # ------------------------------------------------------------------------------
+      - name: Upload HTML report as an artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mutation-report-${{ github.sha }}
+          path: reports/mutation/
+          # A missing report means the run died before the reporter wrote anything — that is
+          # a real problem, so surface it rather than silently uploading nothing.
+          if-no-files-found: warn
+          retention-days: 14

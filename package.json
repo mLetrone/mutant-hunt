@@ -1,0 +1,35 @@
+{
+  "name": "mutant-hunt",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Coverage lies, mutation score does not.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "check": "vp check",
+    "check:fix": "vp check --fix",
+    "fmt": "vp fmt --check",
+    "fmt:fix": "vp fmt",
+    "lint": "vp lint --deny-warnings",
+    "typecheck": "vp check --no-fmt --no-lint",
+    "test": "vp test --run",
+    "test:coverage": "vp test --run --coverage",
+    "test:mutation": "stryker run",
+    "test:mutation:incremental": "stryker run --incremental"
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "10.0.0",
+    "@stryker-mutator/typescript-checker": "10.0.0",
+    "@stryker-mutator/vitest-runner": "10.0.0",
+    "@types/node": "24.9.2",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "6.0.3",
+    "vite-plus": "0.3.3",
+    "vitest": "4.1.11"
+  },
+  "engines": {
+    "node": ">=24.0.0 <25.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "packageManager": "pnpm@12.5.1"
+}
